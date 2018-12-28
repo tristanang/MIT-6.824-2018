@@ -1,5 +1,12 @@
 package mapreduce
 
+import (
+	"os"
+	"encoding/json"
+	"log"
+	"sort"
+)
+
 func doReduce(
 	jobName string, // the name of the whole MapReduce job
 	reduceTask int, // which reduce task this is
@@ -17,10 +24,7 @@ func doReduce(
 	// reduceName(jobName, m, reduceTask) yields the file
 	// name from map task m.
 	//
-	// Your doMap() encoded the key/value pairs in the intermediate
-	// files, so you will need to decode them. If you used JSON, you can
-	// read and decode by creating a decoder and repeatedly calling
-	// .Decode(&kv) on it until it returns an error.
+
 	//
 	// You may find the first example in the golang sort package
 	// documentation useful.
@@ -43,5 +47,61 @@ func doReduce(
 	// file.Close()
 	//
 	// Your code here (Part I).
+	
+	decoders := make([]*json.Decoder, nMap)
+
+	for i := 0; i < nMap; i++ {
+		fileName := reduceName(jobName, i, reduceTask)
+		file, err := os.Open(fileName)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		decoders[i] = json.NewDecoder(file)
+		defer file.Close()
+	}
+
+	keyValues := make(map[string][]string)
+
+	// Your doMap() encoded the key/value pairs in the intermediate
+	// files, so you will need to decode them. If you used JSON, you can
+	// read and decode by creating a decoder and repeatedly calling
+	// .Decode(&kv) on it until it returns an error.
+
+	for i := 0; i < nMap; i++ {
+
+		for {
+			var kv *KeyValue
+			err := decoders[i].Decode(&kv)
+			if err != nil {
+				break
+			}
+
+			keyValues[kv.Key] = append(keyValues[kv.Key], kv.Value)
+		}
+	}
+
+	var sortedKeys []string
+	for key := range keyValues {
+		sortedKeys = append(sortedKeys, key)
+	}
+	sort.Strings(sortedKeys)
+
+	file, err := os.Create(outFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// enc := json.NewEncoder(file)
+	// for key := ... {
+	// 	enc.Encode(KeyValue{key, reduceF(...)})
+	// }
+	// file.Close()
 	//
+	// Your code here (Part I).
+
+	enc := json.NewEncoder(file)
+	for _, key := range sortedKeys {
+		enc.Encode(KeyValue{key, reduceF(key, keyValues[key])})
+	}
 }
