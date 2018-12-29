@@ -2,7 +2,6 @@ package mapreduce
 
 import (
 	"fmt"
-	"sync"
 )
 
 //
@@ -44,32 +43,46 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 
 	fmt.Printf("Schedule: %v %v tasks (%d I/Os)\n", ntasks, phase, n_other)
 
-	var wg sync.WaitGroup
+	tasksChan := make(chan int, ntasks)
+	go func() {
+		for i := 0; i < ntasks; i++ {
+			tasksChan <- i
+		}
+	}()
+
 	poolChan := make(chan string, ntasks) // Pool of available workers
 
+	successChan := make(chan bool)
+
 	// Function to initalize a task
-	initTask := func(worker string, task DoTaskArgs) {
-		wg.Add(1)
-		defer wg.Done()
-		success := call(worker, "Worker.DoTask", task, nil)
-		poolChan <- worker
+	initTask := func(task int) {
+		worker := <-poolChan
+		success := call(worker, "Worker.DoTask", tasks[task], nil)
 
 		if !success {
-			tasks = append(tasks, task)
+			tasksChan <- task
+		} else {
+			successChan <- true
 		}
+
+		poolChan <- worker
 	}
 
-	for len(tasks) > 0 {
+	successCount := 0
+
+	for {
 		select {
 		case worker := <-registerChan: // Worker initialized
 			poolChan <- worker
-		case worker := <-poolChan:
-			task := tasks[0]
-			tasks = tasks[1:]
-			go initTask(worker, task)
+		case task := <-tasksChan:
+			go initTask(task)
+		case <-successChan:
+			successCount += 1
+			if successCount >= ntasks {
+				fmt.Printf("Schedule: %v done\n", phase)
+				return
+			}
 		}
 	}
 
-	wg.Wait()
-	fmt.Printf("Schedule: %v done\n", phase)
 }
