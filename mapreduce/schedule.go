@@ -1,6 +1,9 @@
 package mapreduce
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 //
 // schedule() starts and waits for all tasks in the given phase (mapPhase
@@ -22,13 +25,51 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 		ntasks = nReduce
 		n_other = len(mapFiles)
 	}
+	// All ntasks tasks have to be scheduled on workers. Once all tasks
+	// have completed successfully, schedule() should return.
+
+	// Creating task list
+	var tasks []DoTaskArgs
+	for i := 0; i < ntasks; i++ {
+		task := DoTaskArgs{
+			JobName:       jobName,
+			File:          mapFiles[i], // only for map phase
+			Phase:         phase,
+			TaskNumber:    i,
+			NumOtherPhase: n_other,
+		}
+
+		tasks = append(tasks, task)
+	}
 
 	fmt.Printf("Schedule: %v %v tasks (%d I/Os)\n", ntasks, phase, n_other)
 
-	// All ntasks tasks have to be scheduled on workers. Once all tasks
-	// have completed successfully, schedule() should return.
-	//
-	// Your code here (Part III, Part IV).
-	//
+	var wg sync.WaitGroup
+	poolChan := make(chan string, ntasks) // Pool of available workers
+
+	// Function to initalize a task
+	initTask := func(worker string, task DoTaskArgs) {
+		wg.Add(1)
+		defer wg.Done()
+		success := call(worker, "Worker.DoTask", task, nil)
+		poolChan <- worker
+
+		if !success {
+			tasks = append(tasks, task)
+		}
+	}
+
+	for len(tasks) > 0 {
+		select {
+		case worker := <-registerChan: // Worker initialized
+			poolChan <- worker
+		case worker := <-poolChan:
+			task := tasks[0]
+			tasks = tasks[1:]
+			go initTask(worker, task)
+		}
+	}
+
+	wg.Wait()
 	fmt.Printf("Schedule: %v done\n", phase)
 }
