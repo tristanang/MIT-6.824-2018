@@ -17,13 +17,21 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "labrpc"
+import (
+    "sync"
+    "labrpc"
+    "time"
+    "math/rand"
+)
 
 // import "bytes"
 // import "labgob"
 
-
+// Simple Functions
+// Randomized timeouts between [400, 600)-ms
+func electionTimeout() time.Duration { 
+    return time.Duration(400 + rand.Intn(200)) * time.Millisecond
+}
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -42,6 +50,16 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
+type ServerState string
+
+const (
+    Leader ServerState = "Leader"
+    Follower ServerState = "Follower"
+    Candidate ServerState = "Candidate"
+)
+
+const HeartbeatInterval = 100 * time.Millisecond
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -55,16 +73,152 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+    // General States
+    id          string
+    state       ServerState
+
+    // Persistent States
+    currentTerm int
+    votedFor    string
+    //log
+
+    // Volatile States
+    commitIndex int
+    lastApplied int
+
+    // Leader Only States
+    nextIndex   []int
+    matchIndex  []int
+
+    // Etc
+    electionTimer *time.Timer
+    timerChan      int bool
 }
+
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
+    rf.mu.Lock()
+    defer rf.mu.Unlock()
 
 	var term int
 	var isleader bool
-	// Your code here (2A).
+
+    term = rf.currentTerm
+    isleader = (rf.state == Leader)
+
 	return term, isleader
+}
+
+
+
+// timer functions
+func (rf *Raft) resetTimer() {
+    select {
+    case rf.timerChan <- true:
+    default:
+    }
+}
+
+func (rf *Raft) checkTimeout() {
+    for {
+        select {
+        case <-rf.electionTimer.C:
+            rf.mu.Lock()
+
+            if rf.state == Follower {
+                rf.becomeCandidate()
+            } else if rf.state == Candidate {
+                rf.startElection()
+            }
+
+            rf.mu.Unlock()
+
+        case <-rf.timerChan:
+            if !rf.electionTimer.Stop() {
+                select {
+                    case <- rf.electionTimer.C:
+                    default:
+                }
+            }
+
+            rf.electionTimer.Reset(electionTimeout())
+        }
+    }
+}
+
+// Functions related to electing a new leader
+func (rf *Raft) becomeCandidate() {
+    rf.state = Candidate
+    rf.startElection()
+}
+
+
+func (rf *Raft) becomeFollower(term int) {
+    rf.state = Follower
+    rf.currentTerm = term
+    rf.votedFor = ""
+    rf.resetTimer()
+}
+
+
+func (rf *Raft) startElection() {
+
+    rf.currentTerm++
+    electionTerm = rf.currentTerm
+
+    rf.votedFor = rf.id
+    rf.resetTimer()
+
+    voteChan := make(int bool, len(rf.peers) - 1)
+    args := RequestVoteArgs {
+            Term: rf.currentTerm,
+            CandidateId: rf.id,
+            LastLogIndex: 0,
+            LastLogTerm: 0,
+    }
+
+    // requesting votes
+    var wg sync.WaitGroup
+    wait.Add(len(rf.peers) - 1)
+
+    for i := range len(rf.peers) {
+        if i != rf.me {
+            reply := RequestVoteReply{}
+
+            go func(i int, reply RequestVoteReply) {
+                success := rf.sendRequestVote(i, &args, &reply)
+
+                if success {
+                    if reply.VoteGranted {
+                        voteChan <- 1
+                    } else {
+                        voteChan <- 0
+                        if reply.Term > rf.Term {
+                            rf.becomeFollower(reply.Term)
+                        }
+                    }
+                } else {
+                    voteChan <- 0
+                }
+
+                wg.Done()
+            }(i, reply)  
+        }
+    }
+
+    wg.Wait()
+    close(voteChan)
+
+    // counting votes
+    voteCount := 1
+    for vote := range voteChan {
+        voteCount += vote
+    }
+
+    if (rf.state != Candidate) || (rf.currentTerm != electionTerm)
+    return
 }
 
 
@@ -108,15 +262,18 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 
-
-
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+    Term int
+    CandidateId string
+    LastLogIndex int
+    LastLogTerm  int
 }
+
 
 //
 // example RequestVote RPC reply structure.
@@ -124,15 +281,42 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+    Term int
+    VoteGranted bool
 }
+
+
+func (rf *Raft) AppendEntries() {
+}
+
 
 //
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+    rf.mu.Lock()
+    defer rf.mu.Unlock()
+
+    reply.Term = rf.currentTerm
+
+    if args.Term > reply.Term {
+        rf.becomeFollower(args.Term)
+    }
+
+    switch {
+    case reply.Term > args.Term:
+        reply.VoteGranted = false
+    case (rf.votedFor == "" || rf.votedFor == args.CandidateId):
+        reply.VoteGranted = true
+        rf.votedFor = args.CandidateId
+    default:
+        DPrintf("default case")
+        reply.VoteGranted = false
+    }
 }
 
+    
 //
 // example code to send a RequestVote RPC to a server.
 // server is the index of the target server in rf.peers[].
@@ -216,16 +400,29 @@ func (rf *Raft) Kill() {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
+	rf := &Raft{
+        peers:       peers,
+        persister:   persister,
+        me:          me,
+        //
+        id:          string(me),
+        state:       Follower,
+        currentTerm: 0,
+        votedFor:   "",
+        //
+        commitIndex: 0,
+        lastApplied: 0,
+    }
 
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+    // Election timeout
+    rf.timerChan = make(chan bool)
+    rf.electionTimer = time.NewTimer(electionTimeout())
+    go rf.checkTimeout()
 
-	return rf
+    return rf
 }
