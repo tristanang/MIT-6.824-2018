@@ -173,7 +173,7 @@ func (rf *Raft) sendHeartBeat(i int, args AppendEntriesArgs) {
 	ok := rf.sendAppendEntries(i, &args, &reply)
 
 	if ok {
-		DPrintf("Sent heartbeat %v to %v", rf.me, i)
+		// DPrintf("Sent heartbeat %v to %v", rf.me, i)
 		rf.mu.Lock()
 		if reply.Term > rf.currentTerm {
 			rf.becomeFollower(reply.Term)
@@ -207,7 +207,7 @@ func (rf *Raft) startHeartBeat() {
 		rf.mu.Lock()
 
 		if rf.state != Leader {
-			DPrintf("No longer leader")
+			DPrintf("%v is no longer leader", rf.me)
 			ticker.Stop()
 			rf.mu.Unlock()
 			return
@@ -284,11 +284,11 @@ func (rf *Raft) startElection() {
 
 	// counting votes
 	voteCount := 1
-	for vote := range voteChan {
+	for  vote := range voteChan {
 		voteCount += vote
 	}
 
-	DPrintf("Election for %v, votes: %v", rf.me, voteCount)
+	DPrintf("Election for %v, votes: %v, total: %v", rf.me, voteCount, len(rf.peers))
 
 	rf.mu.Lock()
 
@@ -441,8 +441,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	select {
 	case ok := <-boolChan:
 		return ok
-	case <-time.After(time.Millisecond * 200):
-		return false
+	// case <-time.After(time.Millisecond * 200):
+	// 	return false
 	}
 }
 
