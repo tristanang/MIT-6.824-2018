@@ -294,6 +294,8 @@ func (rf *Raft) startElection() {
 
 	if (rf.state != Candidate) || (rf.currentTerm != electionTerm) {
 		DPrintf("nani")
+		DPrintf("State : %v", rf.state)
+		DPrintf("Current Term: %v, Election Term: %v", rf.currentTerm, electionTerm)
 		rf.mu.Unlock()
 		return
 	}
@@ -305,7 +307,9 @@ func (rf *Raft) startElection() {
 		return
 	}
 
+	rf.electionTimer.Reset(electionTimeout())
 	rf.mu.Unlock()
+
 	return
 }
 
@@ -395,6 +399,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		DPrintf("default case")
 		reply.VoteGranted = false
 	}
+	return
 }
 
 //
@@ -427,8 +432,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
+	boolChan := make(chan bool)
+
+	go func() {
+		boolChan <- rf.peers[server].Call("Raft.RequestVote", args, reply)
+	}()
+
+	select {
+	case ok := <-boolChan:
+		return ok
+	case <-time.After(time.Millisecond * 200):
+		return false
+	}
 }
 
 // Append Entries functins
@@ -470,6 +485,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 
+	return
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
