@@ -92,7 +92,7 @@ type Raft struct {
 
     // Etc
     electionTimer *time.Timer
-    timerChan      int bool
+    timerChan      chan bool
 }
 
 
@@ -133,8 +133,6 @@ func (rf *Raft) checkTimeout() {
                 rf.startElection()
             }
 
-            rf.mu.Unlock()
-
         case <-rf.timerChan:
             if !rf.electionTimer.Stop() {
                 select {
@@ -163,15 +161,22 @@ func (rf *Raft) becomeFollower(term int) {
 }
 
 
+func (rf *Raft) becomeLeader() {
+    rf.state = Leader
+    rf.nextIndex = make([]int, len(rf.peers))
+    rf.matchIndex = make([]int, len(rf.peers))
+}
+
+
 func (rf *Raft) startElection() {
 
     rf.currentTerm++
-    electionTerm = rf.currentTerm
+    electionTerm := rf.currentTerm
 
     rf.votedFor = rf.id
     rf.resetTimer()
 
-    voteChan := make(int bool, len(rf.peers) - 1)
+    voteChan := make(chan int, len(rf.peers) - 1)
     args := RequestVoteArgs {
             Term: rf.currentTerm,
             CandidateId: rf.id,
@@ -179,11 +184,13 @@ func (rf *Raft) startElection() {
             LastLogTerm: 0,
     }
 
+    rf.mu.Unlock()
+
     // requesting votes
     var wg sync.WaitGroup
-    wait.Add(len(rf.peers) - 1)
+    wg.Add(len(rf.peers) - 1)
 
-    for i := range len(rf.peers) {
+    for i := range rf.peers {
         if i != rf.me {
             reply := RequestVoteReply{}
 
@@ -195,9 +202,12 @@ func (rf *Raft) startElection() {
                         voteChan <- 1
                     } else {
                         voteChan <- 0
-                        if reply.Term > rf.Term {
+
+                        rf.mu.Lock()
+                        if reply.Term > rf.currentTerm {
                             rf.becomeFollower(reply.Term)
                         }
+                        rf.mu.Unlock()
                     }
                 } else {
                     voteChan <- 0
@@ -217,7 +227,20 @@ func (rf *Raft) startElection() {
         voteCount += vote
     }
 
-    if (rf.state != Candidate) || (rf.currentTerm != electionTerm)
+    rf.mu.Lock()
+
+    if (rf.state != Candidate) || (rf.currentTerm != electionTerm) {
+        rf.mu.Unlock()
+        return
+    }
+    
+    if voteCount > (len(rf.peers) / 2) {
+        rf.becomeLeader()
+        rf.mu.Unlock()
+        return
+    }
+
+    rf.mu.Unlock()
     return
 }
 
@@ -385,6 +408,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
+    // rf.electionTimer 
 }
 
 //
