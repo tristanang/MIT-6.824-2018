@@ -38,7 +38,7 @@ func TestInitialElection2A(t *testing.T) {
 	time.Sleep(2 * RaftElectionTimeout)
 	term2 := cfg.checkTerms()
 	if term1 != term2 {
-		fmt.Printf("warning: term changed even though there were no failures")
+		fmt.Printf(" warning: term changed even though there were no failures")
 	}
 
 	// there should still be a leader.
@@ -57,16 +57,19 @@ func TestReElection2A(t *testing.T) {
 	leader1 := cfg.checkOneLeader()
 
 	// if the leader disconnects, a new one should be elected.
+	fmt.Printf("Disconnecting leader\n")
 	cfg.disconnect(leader1)
 	cfg.checkOneLeader()
 
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader.
+	fmt.Printf("Reconnecting leader\n")
 	cfg.connect(leader1)
 	leader2 := cfg.checkOneLeader()
 
 	// if there's no quorum, no leader should
 	// be elected.
+	fmt.Printf("Disconnecting leader2")
 	cfg.disconnect(leader2)
 	cfg.disconnect((leader2 + 1) % servers)
 	time.Sleep(2 * RaftElectionTimeout)
@@ -184,7 +187,7 @@ func TestFailNoAgree2B(t *testing.T) {
 	}
 
 	cfg.one(1000, servers, true)
-
+	time.Sleep(2 * RaftElectionTimeout)
 	cfg.end()
 }
 
