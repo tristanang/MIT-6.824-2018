@@ -30,7 +30,7 @@ import (
 // Simple Functions
 // Randomized timeouts between [400, 600)-ms
 func electionTimeout() time.Duration {
-	return time.Duration(350+rand.Intn(350)) * time.Millisecond
+	return time.Duration(400+rand.Intn(200)) * time.Millisecond
 }
 
 //
@@ -44,6 +44,11 @@ func electionTimeout() time.Duration {
 // snapshots) on the applyCh; at that point you can add fields to
 // ApplyMsg, but set CommandValid to false for these other uses.
 //
+type LogEntry struct {
+	Command interface{}
+	Term    int
+}
+
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
@@ -58,7 +63,7 @@ const (
 	Candidate ServerState = "Candidate"
 )
 
-const HeartbeatInterval = 100 * time.Millisecond
+const HeartbeatInterval = 110 * time.Millisecond
 
 //
 // A Go object implementing a single Raft peer.
@@ -80,7 +85,7 @@ type Raft struct {
 	// Persistent States
 	currentTerm int
 	votedFor    string
-	//log
+	log         []LogEntry
 
 	// Volatile States
 	commitIndex int
@@ -144,7 +149,10 @@ func (rf *Raft) checkTimeout() {
 }
 
 // Functions related to electing a new leader
-func (rf *Raft) checkTerm(term int) {
+func (rf *Raft) compareTerm(otherTerm int) {
+	if otherTerm > rf.currentTerm {
+		rf.becomeFollower(otherTerm)
+	}
 }
 
 func (rf *Raft) becomeCandidate() {
@@ -175,9 +183,7 @@ func (rf *Raft) sendHeartBeat(i int, args AppendEntriesArgs) {
 	if ok {
 		// DPrintf("Sent heartbeat %v to %v", rf.me, i)
 		rf.mu.Lock()
-		if reply.Term > rf.currentTerm {
-			rf.becomeFollower(reply.Term)
-		}
+		rf.compareTerm(reply.Term)
 		rf.mu.Unlock()
 	}
 }
@@ -233,7 +239,7 @@ func (rf *Raft) startElection() {
 	electionTerm := rf.currentTerm
 
 	rf.votedFor = rf.id
-	rf.resetTimer()
+	// rf.electionTimer.Reset(electionTimeout())
 
 	voteChan := make(chan int, len(rf.peers)-1)
 	args := RequestVoteArgs{
@@ -265,9 +271,7 @@ func (rf *Raft) startElection() {
 						voteChan <- 0
 
 						rf.mu.Lock()
-						if reply.Term > rf.currentTerm {
-							rf.becomeFollower(reply.Term)
-						}
+						rf.compareTerm(reply.Term)
 						rf.mu.Unlock()
 					}
 				} else {
@@ -284,7 +288,7 @@ func (rf *Raft) startElection() {
 
 	// counting votes
 	voteCount := 1
-	for  vote := range voteChan {
+	for vote := range voteChan {
 		voteCount += vote
 	}
 
@@ -383,9 +387,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	reply.Term = rf.currentTerm
 
-	if args.Term > reply.Term {
-		rf.becomeFollower(args.Term)
-	}
+	rf.compareTerm(args.Term)
 
 	switch {
 	case reply.Term > args.Term:
@@ -396,7 +398,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 	default:
-		DPrintf("default case")
+		DPrintf("default case for voting")
 		reply.VoteGranted = false
 	}
 	return
@@ -441,8 +443,10 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	select {
 	case ok := <-boolChan:
 		return ok
-	// case <-time.After(time.Millisecond * 200):
-	// 	return false
+	case <-time.After(time.Millisecond * 200):
+		reply.VoteGranted = false
+		reply.Term = -1
+		return false
 	}
 }
 
