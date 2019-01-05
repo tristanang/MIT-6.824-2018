@@ -389,6 +389,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	rf.compareTerm(args.Term)
 
+	if rf.state == Follower {
+		rf.resetTimer()
+	}
+
 	switch {
 	case reply.Term > args.Term:
 		DPrintf("%v says no vote", rf.me)
@@ -433,6 +437,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
+// Added a faster timeout thing to make it work. Could probably remove it eventually
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	boolChan := make(chan bool)
 
@@ -466,6 +471,7 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
+// Not the best implementation a bit repetitive
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -521,13 +527,32 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	index := -1
+	term := rf.currentTerm
+	isLeader := (rf.state == Leader)
+
+	if isLeader {
+		index = rf.appendLog(command)
+	}
 
 	return index, term, isLeader
+}
+
+func (rf *Raft) appendLog(command interface{}) (index int) {
+	entry := LogEntry{
+		Term:    rf.currentTerm,
+		Command: command,
+	}
+
+	rf.log = append(rf.log, entry)
+
+	index = 1 // I don't know what this is right now
+
+	return index
 }
 
 //
