@@ -132,8 +132,10 @@ func (rf *Raft) checkTimeout() {
 			if rf.state == Follower {
 				rf.becomeCandidate()
 			} else if rf.state == Candidate {
-				rf.startElection()
+				go rf.startElection()
 			}
+
+			rf.mu.Unlock()
 
 		case <-rf.timerChan:
 			if !rf.electionTimer.Stop() {
@@ -145,6 +147,7 @@ func (rf *Raft) checkTimeout() {
 
 			rf.electionTimer.Reset(electionTimeout())
 		}
+		// time.Sleep(time.Millisecond * 10)
 	}
 }
 
@@ -157,7 +160,7 @@ func (rf *Raft) compareTerm(otherTerm int) {
 
 func (rf *Raft) becomeCandidate() {
 	rf.state = Candidate
-	rf.startElection()
+	go rf.startElection()
 }
 
 func (rf *Raft) becomeFollower(term int) {
@@ -239,7 +242,7 @@ func (rf *Raft) startElection() {
 	electionTerm := rf.currentTerm
 
 	rf.votedFor = rf.id
-	// rf.electionTimer.Reset(electionTimeout())
+	rf.electionTimer.Reset(electionTimeout())
 
 	voteChan := make(chan int, len(rf.peers)-1)
 	args := RequestVoteArgs{
@@ -248,8 +251,6 @@ func (rf *Raft) startElection() {
 		LastLogIndex: 0, // needs modification
 		LastLogTerm:  0, // needs modification
 	}
-
-	rf.mu.Unlock()
 
 	// requesting votes
 	var wg sync.WaitGroup
@@ -283,36 +284,34 @@ func (rf *Raft) startElection() {
 		}
 	}
 
+	voteCount := 1
+	votes := 1
+
+	for {
+		select {
+		case vote := <-voteChan:
+			voteCount += vote
+			votes += 1
+
+			rf.mu.Lock()
+
+			if (voteCount > (len(rf.peers) / 2)) && (rf.state == Candidate) && (rf.currentTerm == electionTerm) {
+				DPrintf("becoming leader")
+				rf.becomeLeader()
+				rf.mu.Unlock()
+				break
+			} else if votes == len(rf.peers) {
+				rf.mu.Unlock()
+				break
+			}
+			rf.mu.Unlock()
+		}
+
+		// time.Sleep(time.Millisecond * 10)
+	}
+
 	wg.Wait()
 	close(voteChan)
-
-	// counting votes
-	voteCount := 1
-	for vote := range voteChan {
-		voteCount += vote
-	}
-
-	DPrintf("Election for %v, votes: %v, total: %v", rf.me, voteCount, len(rf.peers))
-
-	rf.mu.Lock()
-
-	if (rf.state != Candidate) || (rf.currentTerm != electionTerm) {
-		DPrintf("nani")
-		DPrintf("State : %v", rf.state)
-		DPrintf("Current Term: %v, Election Term: %v", rf.currentTerm, electionTerm)
-		rf.mu.Unlock()
-		return
-	}
-
-	if voteCount > (len(rf.peers) / 2) {
-		DPrintf("becoming leader")
-		rf.becomeLeader()
-		rf.mu.Unlock()
-		return
-	}
-
-	rf.electionTimer.Reset(electionTimeout())
-	rf.mu.Unlock()
 
 	return
 }
@@ -439,20 +438,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 // Added a faster timeout thing to make it work. Could probably remove it eventually
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	boolChan := make(chan bool)
-
-	go func() {
-		boolChan <- rf.peers[server].Call("Raft.RequestVote", args, reply)
-	}()
-
-	select {
-	case ok := <-boolChan:
-		return ok
-	case <-time.After(time.Millisecond * 200):
-		reply.VoteGranted = false
-		reply.Term = -1
-		return false
-	}
+	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	return ok
 }
 
 // Append Entries functins
