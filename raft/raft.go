@@ -117,10 +117,7 @@ func (rf *Raft) GetState() (int, bool) {
 
 // timer functions
 func (rf *Raft) resetTimer() {
-	select {
-	case rf.timerChan <- true:
-	default:
-	}
+	rf.timerChan <- true
 }
 
 func (rf *Raft) checkTimeout() {
@@ -131,6 +128,7 @@ func (rf *Raft) checkTimeout() {
 
 			if rf.state == Follower {
 				rf.becomeCandidate()
+
 			} else if rf.state == Candidate {
 				go rf.startElection()
 			}
@@ -238,13 +236,20 @@ func (rf *Raft) startHeartBeat() {
 
 func (rf *Raft) startElection() {
 	DPrintf("start election for: %v", rf.me)
+
+	rf.mu.Lock()
+
 	rf.currentTerm++
 	electionTerm := rf.currentTerm
 
 	rf.votedFor = rf.id
-	rf.electionTimer.Reset(electionTimeout())
+	rf.resetTimer()
+	// rf.electionTimer.Reset(electionTimeout())
 
-	voteChan := make(chan int, len(rf.peers)-1)
+	numPeers := len(rf.peers) // This is to avoid race condition
+	me := rf.me               // This is to avoid race condition
+
+	voteChan := make(chan int, numPeers-1)
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.id,
@@ -252,12 +257,14 @@ func (rf *Raft) startElection() {
 		LastLogTerm:  0, // needs modification
 	}
 
+	rf.mu.Unlock()
+
 	// requesting votes
 	var wg sync.WaitGroup
-	wg.Add(len(rf.peers) - 1)
+	wg.Add(numPeers - 1)
 
-	for i := range rf.peers {
-		if i != rf.me {
+	for i := 1; i < numPeers; i++ {
+		if i != me {
 			reply := RequestVoteReply{}
 
 			go func(i int, reply RequestVoteReply) {
@@ -300,6 +307,7 @@ func (rf *Raft) startElection() {
 				rf.becomeLeader()
 				rf.mu.Unlock()
 				break
+
 			} else if votes == len(rf.peers) {
 				rf.mu.Unlock()
 				break
