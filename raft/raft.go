@@ -197,7 +197,7 @@ func (rf *Raft) sendHeartBeat(i int, args AppendEntriesArgs) {
 		rf.mu.Lock()
 		rf.compareTerm(reply.Term)
 
-		if rf.state == "Leader" {
+		if rf.state == Leader {
 			// DPrintf("Len Entries = %v, PrevLogIndex = %v", len(args.Entries), args.PrevLogIndex)
 			rf.nextIndex[i] += len(args.Entries)
 			rf.matchIndex[i] = rf.nextIndex[i] - 1
@@ -207,7 +207,7 @@ func (rf *Raft) sendHeartBeat(i int, args AppendEntriesArgs) {
 
 		rf.mu.Unlock()
 
-		if reply.ReduceNextIndex {
+		if reply.ReduceNextIndex && rf.state == Leader {
 			// DPrintf("Reduce %v index", i)
 
 			args.PrevLogIndex--
@@ -378,7 +378,7 @@ func (rf *Raft) startElection() {
 			rf.mu.Lock()
 
 			if (voteCount > (len(rf.peers) / 2)) && (rf.state == Candidate) && (rf.currentTerm == electionTerm) {
-				// DPrintf("becoming leader")
+				DPrintf("%v is becoming leader", rf.me)
 				rf.becomeLeader()
 				rf.mu.Unlock()
 				break
@@ -477,27 +477,34 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.resetTimer()
 	}
 
+	logUpToDate := func() bool {
+		if len(rf.log) == 0 {
+			return true
+		}
+
+		lastTerm := rf.log[len(rf.log)-1].Term
+		lastIndex := len(rf.log)
+
+		if lastTerm == args.LastLogTerm {
+			return lastIndex <= args.LastLogIndex
+		}
+
+		return lastTerm < args.LastLogTerm
+	}()
+
 	switch {
 	case reply.Term > args.Term:
 		// DPrintf("%v says no vote", rf.me)
 		reply.VoteGranted = false
-	case (rf.votedFor == "" || rf.votedFor == args.CandidateId):
-		if len(rf.log) == 0 {
-			reply.VoteGranted = true
-			rf.votedFor = args.CandidateId
+	case (rf.votedFor == "" || rf.votedFor == args.CandidateId) && logUpToDate:
+		reply.VoteGranted = true
+		rf.votedFor = args.CandidateId
 
-		} else if rf.log[len(rf.log)-1].Term > args.LastLogTerm || len(rf.log) > args.LastLogIndex {
-			reply.VoteGranted = false
-
-		} else {
-			reply.VoteGranted = true
-			rf.votedFor = args.CandidateId
-
-		}
 	default:
 		// DPrintf("default case for voting")
 		reply.VoteGranted = false
 	}
+
 	return
 }
 
@@ -583,7 +590,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 
-	if rf.state != "Leader" {
+	if rf.state != Leader {
 		// DPrintf("Append Entries LeaderCommit %v, My commit %v", args.LeaderCommit, rf.commitIndex)
 
 		// DPrintf("args %v, mine %v", args.LeaderCommit, rf.commitIndex)
@@ -595,7 +602,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		if rf.lastApplied < rf.commitIndex {
 			for logIndex := rf.lastApplied + 1; logIndex < rf.commitIndex+1; logIndex++ {
-				// DPrintf("Follower %v, Log Index: %v, Command %v", rf.me, logIndex, rf.getLogEntry(logIndex).Command)
+				DPrintf("Follower %v, Log Index: %v, Command %v", rf.me, logIndex, rf.getLogEntry(logIndex).Command)
 				rf.applyChan <- ApplyMsg{
 					CommandValid: true,
 					Command:      rf.getLogEntry(logIndex).Command,
@@ -832,7 +839,7 @@ func (rf *Raft) updateCommitIndex() {
 	}
 
 	for toCommit := prevCommitIndex + 1; toCommit < rf.commitIndex+1; toCommit++ {
-		// DPrintf("Leader %v, Log Index: %v, Command %v, nextIndex for 0: %v, nextIndex for 1: %v, nextIndex for 2: %v", rf.me, toCommit, rf.getLogEntry(toCommit).Command, rf.nextIndex[0], rf.nextIndex[1], rf.nextIndex[2])
+		DPrintf("Leader %v, Log Index: %v, Command %v, nextIndex for 0: %v, nextIndex for 1: %v, nextIndex for 2: %v", rf.me, toCommit, rf.getLogEntry(toCommit).Command, rf.nextIndex[0], rf.nextIndex[1], rf.nextIndex[2])
 		rf.applyChan <- ApplyMsg{
 			CommandValid: true,
 			Command:      rf.getLogEntry(toCommit).Command,
