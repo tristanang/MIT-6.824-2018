@@ -138,6 +138,7 @@ func (rf *Raft) checkTimeout() {
 			rf.mu.Unlock()
 
 		case <-rf.timerChan:
+			// DPrintf("%v Does this work", rf.me)
 			if !rf.electionTimer.Stop() {
 				select {
 				case <-rf.electionTimer.C:
@@ -147,7 +148,7 @@ func (rf *Raft) checkTimeout() {
 
 			rf.electionTimer.Reset(electionTimeout())
 		}
-		// time.Sleep(time.Millisecond * 10)
+		time.Sleep(time.Millisecond * 10)
 	}
 }
 
@@ -206,30 +207,32 @@ func (rf *Raft) sendHeartBeat(i int, args AppendEntriesArgs) {
 
 		rf.mu.Unlock()
 
-	} else if reply.ReduceNextIndex {
-		// DPrintf("Reduce %v index", i)
+		if reply.ReduceNextIndex {
+			// DPrintf("Reduce %v index", i)
 
-		args.PrevLogIndex--
-		args.PrevLogTerm = -1
+			args.PrevLogIndex--
+			args.PrevLogTerm = -1
 
-		rf.mu.Lock()
+			rf.mu.Lock()
 
-		args.LeaderCommit = rf.commitIndex
-		// DPrintf("LeaderCommit %v", args.LeaderCommit)
-		rf.nextIndex[i]--
+			args.LeaderCommit = rf.commitIndex
+			// DPrintf("LeaderCommit %v", args.LeaderCommit)
+			rf.nextIndex[i]--
 
-		if args.PrevLogIndex == 0 {
-			args.Entries = rf.log
+			if args.PrevLogIndex == 0 {
+				args.Entries = rf.log
 
-		} else if rf.indexValid(args.PrevLogIndex) {
-			args.PrevLogTerm = rf.getLogEntry(args.PrevLogIndex).Term
-			idx := rf.nextIndex[i] - 1
-			args.Entries = rf.log[idx:]
+			} else if rf.indexValid(args.PrevLogIndex) {
+				args.PrevLogTerm = rf.getLogEntry(args.PrevLogIndex).Term
+				idx := rf.nextIndex[i] - 1
+				args.Entries = rf.log[idx:]
+			}
+
+			rf.mu.Unlock()
+
+			go rf.sendHeartBeat(i, args)
+
 		}
-
-		rf.mu.Unlock()
-
-		go rf.sendHeartBeat(i, args)
 	}
 }
 
@@ -274,7 +277,6 @@ func (rf *Raft) startHeartBeat() {
 					rf.mu.Lock()
 					args.LeaderCommit = rf.commitIndex
 
-
 					args.PrevLogIndex = rf.nextIndex[i] - 1
 					args.PrevLogTerm = -1
 					args.Entries = []LogEntry{}
@@ -295,7 +297,6 @@ func (rf *Raft) startHeartBeat() {
 					rf.mu.Unlock()
 
 					// DPrintf("LeaderCommit %v", args.LeaderCommit)
-
 
 					go rf.sendHeartBeat(i, args)
 				}
@@ -323,8 +324,12 @@ func (rf *Raft) startElection() {
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.id,
-		LastLogIndex: 0, // needs modification
-		LastLogTerm:  0, // needs modification
+		LastLogIndex: len(rf.log), // needs modification
+		LastLogTerm:  0,           // needs modification
+	}
+
+	if rf.indexValid(args.LastLogIndex) {
+		args.LastLogTerm = rf.getLogEntry(args.LastLogIndex).Term
 	}
 
 	rf.mu.Unlock()
@@ -477,9 +482,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// DPrintf("%v says no vote", rf.me)
 		reply.VoteGranted = false
 	case (rf.votedFor == "" || rf.votedFor == args.CandidateId):
-		// DPrintf("%v gives vote", rf.me)
-		reply.VoteGranted = true
-		rf.votedFor = args.CandidateId
+		if len(rf.log) == 0 {
+			reply.VoteGranted = true
+			rf.votedFor = args.CandidateId
+
+		} else if rf.log[len(rf.log)-1].Term > args.LastLogTerm || len(rf.log) > args.LastLogIndex {
+			reply.VoteGranted = false
+
+		} else {
+			reply.VoteGranted = true
+			rf.votedFor = args.CandidateId
+
+		}
 	default:
 		// DPrintf("default case for voting")
 		reply.VoteGranted = false
@@ -545,8 +559,6 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	
-
 
 	reply.Term = rf.currentTerm
 	reply.ReduceNextIndex = false
@@ -580,11 +592,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.commitIndex = Min(args.LeaderCommit, len(rf.log))
 			// DPrintf("%v Update Commit Index called after: %v", rf.me, rf.commitIndex)
 		}
-		
 
 		if rf.lastApplied < rf.commitIndex {
-			for logIndex := rf.lastApplied + 1; logIndex < rf.commitIndex + 1; logIndex++ {
-				rf.applyChan <- ApplyMsg {
+			for logIndex := rf.lastApplied + 1; logIndex < rf.commitIndex+1; logIndex++ {
+				// DPrintf("Follower %v, Log Index: %v, Command %v", rf.me, logIndex, rf.getLogEntry(logIndex).Command)
+				rf.applyChan <- ApplyMsg{
 					CommandValid: true,
 					Command:      rf.getLogEntry(logIndex).Command,
 					CommandIndex: logIndex,
@@ -596,11 +608,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// PrevLogIndex < 1 there's no logs to check.
 		if args.PrevLogIndex > 0 {
 			if !(rf.indexValid(args.PrevLogIndex)) {
+				// DPrintf("yeet")
 				reply.ReduceNextIndex = true
 				return
 			}
 
 			if rf.getLogEntry(args.PrevLogIndex).Term != args.PrevLogTerm {
+				// DPrintf("yeet")
 				idx := args.PrevLogIndex - 1
 				rf.log = rf.log[:(idx + 1)]
 				reply.ReduceNextIndex = true
@@ -613,10 +627,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// DPrintf("%v Updating log, number entries: %v, prev: %v", rf.me, len(args.Entries), args.PrevLogIndex)
 		rf.updateLog(args.Entries, args.PrevLogIndex)
 		// DPrintf("%v Updated log, number entries: %v", rf.me, len(rf.log))
-
-
-
-
 
 		reply.Success = true
 	}
@@ -679,7 +689,8 @@ func (rf *Raft) appendLog(command interface{}) (index int) {
 
 	index = len(rf.log)
 
-	DPrintf("Appending, length = %v", index)
+	// DPrintf("Appending, index = %v", index)
+	// DPrintf("%v has a log length of %v", rf.me, len(rf.log))
 
 	return index
 }
@@ -689,6 +700,9 @@ func (rf *Raft) updateLog(entries []LogEntry, PrevLogIndex int) {
 	rf.log = rf.log[:PrevLogIndex]
 	rf.log = append(rf.log, entries...)
 
+	// if len(entries) > 0 {
+	// 	DPrintf("%v has a log length of %v", rf.me, len(rf.log))
+	// }
 	// DPrintf("%v %v: %v log length, %v prev log index", rf.state, rf.me, len(rf.log), PrevLogIndex)
 }
 
@@ -818,6 +832,7 @@ func (rf *Raft) updateCommitIndex() {
 	}
 
 	for toCommit := prevCommitIndex + 1; toCommit < rf.commitIndex+1; toCommit++ {
+		// DPrintf("Leader %v, Log Index: %v, Command %v, nextIndex for 0: %v, nextIndex for 1: %v, nextIndex for 2: %v", rf.me, toCommit, rf.getLogEntry(toCommit).Command, rf.nextIndex[0], rf.nextIndex[1], rf.nextIndex[2])
 		rf.applyChan <- ApplyMsg{
 			CommandValid: true,
 			Command:      rf.getLogEntry(toCommit).Command,
