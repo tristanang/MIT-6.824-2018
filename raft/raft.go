@@ -195,17 +195,9 @@ func (rf *Raft) sendHeartBeat(i int, args AppendEntriesArgs) {
 	if ok {
 		// DPrintf("Sent heartbeat %v to %v", rf.me, i)
 		rf.mu.Lock()
+		defer rf.mu.Unlock()
 		rf.compareTerm(reply.Term)
 
-		if rf.state == Leader {
-			// DPrintf("Len Entries = %v, PrevLogIndex = %v", len(args.Entries), args.PrevLogIndex)
-			rf.nextIndex[i] += len(args.Entries)
-			rf.matchIndex[i] = rf.nextIndex[i] - 1
-			// DPrintf("%v has a nextIndex of %v and matchIndex of %v", i, rf.nextIndex[i], rf.matchIndex[i])
-			rf.updateCommitIndex()
-		}
-
-		rf.mu.Unlock()
 
 		if reply.ReduceNextIndex && rf.state == Leader {
 			// DPrintf("Reduce %v index", i)
@@ -213,7 +205,6 @@ func (rf *Raft) sendHeartBeat(i int, args AppendEntriesArgs) {
 			args.PrevLogIndex--
 			args.PrevLogTerm = -1
 
-			rf.mu.Lock()
 
 			args.LeaderCommit = rf.commitIndex
 			// DPrintf("LeaderCommit %v", args.LeaderCommit)
@@ -228,12 +219,23 @@ func (rf *Raft) sendHeartBeat(i int, args AppendEntriesArgs) {
 				args.Entries = rf.log[idx:]
 			}
 
-			rf.mu.Unlock()
 
 			go rf.sendHeartBeat(i, args)
-
+			return
 		}
 	}
+
+		if rf.state == Leader && reply.Success {
+			// DPrintf("Len Entries = %v, PrevLogIndex = %v", len(args.Entries), args.PrevLogIndex)
+			rf.nextIndex[i] += len(args.Entries)
+			rf.matchIndex[i] = rf.nextIndex[i] - 1
+			// DPrintf("%v has a nextIndex of %v and matchIndex of %v", i, rf.nextIndex[i], rf.matchIndex[i])
+			rf.updateCommitIndex()
+		}
+
+		
+
+		
 }
 
 // Heartbeat includes log replication
@@ -286,12 +288,14 @@ func (rf *Raft) startHeartBeat() {
 					if args.PrevLogIndex == 0 {
 						args.Entries = rf.log
 
-					} else if rf.indexValid(args.PrevLogIndex) && len(rf.log) >= rf.nextIndex[i] {
-
+					} else if rf.indexValid(args.PrevLogIndex){
 						args.PrevLogTerm = rf.getLogEntry(args.PrevLogIndex).Term
-						idx := rf.nextIndex[i] - 1
-						args.Entries = rf.log[idx:]
 
+						if len(rf.log) >= rf.nextIndex[i] {
+							idx := rf.nextIndex[i] - 1
+							args.Entries = rf.log[idx:]
+						} 
+					
 					}
 
 					rf.mu.Unlock()
@@ -600,18 +604,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// DPrintf("%v Update Commit Index called after: %v", rf.me, rf.commitIndex)
 		}
 
-		if rf.lastApplied < rf.commitIndex {
-			for logIndex := rf.lastApplied + 1; logIndex < rf.commitIndex+1; logIndex++ {
-				DPrintf("Follower %v, Log Index: %v, Command %v", rf.me, logIndex, rf.getLogEntry(logIndex).Command)
-				rf.applyChan <- ApplyMsg{
-					CommandValid: true,
-					Command:      rf.getLogEntry(logIndex).Command,
-					CommandIndex: logIndex,
-				}
-
-				rf.lastApplied++
-			}
-		}
 		// PrevLogIndex < 1 there's no logs to check.
 		if args.PrevLogIndex > 0 {
 			if !(rf.indexValid(args.PrevLogIndex)) {
@@ -629,10 +621,29 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		}
 
+		// DPrintf("I am %v. PrevLogIndex %v, PrevLogTerm %v", rf.me, args.PrevLogIndex, args.PrevLogTerm)
+		rf.updateLog(args.Entries, args.PrevLogIndex)
+		// DPrintf("check")
+
+
+		if rf.lastApplied < rf.commitIndex && rf.indexValid(rf.lastApplied + 1) {
+			for logIndex := rf.lastApplied + 1; logIndex < rf.commitIndex+1; logIndex++ {
+				DPrintf("Follower %v, Log Index: %v, Command %v, Term: %v", rf.me, logIndex, rf.getLogEntry(logIndex).Command, rf.getLogEntry(logIndex).Command)
+				
+				rf.applyChan <- ApplyMsg{
+					CommandValid: true,
+					Command:      rf.getLogEntry(logIndex).Command,
+					CommandIndex: logIndex,
+				}
+
+				rf.lastApplied++
+			}
+		}
+		
 		// DPrintf("Append Entries LeaderCommit %v, My commit %v", args.LeaderCommit, rf.commitIndex)
 
 		// DPrintf("%v Updating log, number entries: %v, prev: %v", rf.me, len(args.Entries), args.PrevLogIndex)
-		rf.updateLog(args.Entries, args.PrevLogIndex)
+		
 		// DPrintf("%v Updated log, number entries: %v", rf.me, len(rf.log))
 
 		reply.Success = true
@@ -704,9 +715,14 @@ func (rf *Raft) appendLog(command interface{}) (index int) {
 
 func (rf *Raft) updateLog(entries []LogEntry, PrevLogIndex int) {
 
+	if (PrevLogIndex == 0) {
+		rf.log = entries
+		return
+	}
+
 	rf.log = rf.log[:PrevLogIndex]
 	rf.log = append(rf.log, entries...)
-
+	return
 	// if len(entries) > 0 {
 	// 	DPrintf("%v has a log length of %v", rf.me, len(rf.log))
 	// }
