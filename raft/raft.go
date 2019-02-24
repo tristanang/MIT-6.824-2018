@@ -198,7 +198,7 @@ func (rf *Raft) sendHeartBeat(i int, args AppendEntriesArgs) {
 		rf.compareTerm(reply.Term)
 
 		if rf.state == "Leader" {
-			rf.nextIndex[i] = rf.nextIndex[i] + len(args.Entries)
+			rf.nextIndex[i] += len(args.Entries)
 			rf.matchIndex[i] = rf.nextIndex[i] - 1
 			// rf.updateCommitIndex()
 		}
@@ -266,7 +266,10 @@ func (rf *Raft) startHeartBeat() {
 
 					DPrintf("%v", args.PrevLogIndex)
 
-					if rf.indexValid(args.PrevLogIndex) && len(rf.log) >= rf.nextIndex[i] {
+					if args.PrevLogIndex == 0 && len(rf.log) >= rf.nextIndex[i] {
+						args.Entries = rf.log
+
+					} else if rf.indexValid(args.PrevLogIndex) && len(rf.log) >= rf.nextIndex[i] {
 						args.PrevLogTerm = rf.getLogEntry(args.PrevLogIndex).Term
 						idx := args.PrevLogIndex - 1
 						args.Entries = rf.log[idx:]
@@ -549,6 +552,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// PrevLogIndex < 1 there's no logs to check.
 	if args.PrevLogIndex > 0 {
+	
+
 		if !(rf.indexValid(args.PrevLogIndex)) {
 			if rf.getLogEntry(args.PrevLogIndex).Term != args.PrevLogTerm {
 				rf.log = rf.log[:(args.PrevLogIndex + 1)]
