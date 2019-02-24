@@ -30,7 +30,7 @@ import (
 // Simple Functions
 // Randomized timeouts between [400, 600)-ms
 func electionTimeout() time.Duration {
-	return time.Duration(450+rand.Intn(200)) * time.Millisecond
+	return time.Duration(600+rand.Intn(200)) * time.Millisecond
 }
 
 //
@@ -47,7 +47,6 @@ func electionTimeout() time.Duration {
 type LogEntry struct {
 	Command interface{}
 	Term    int
-	// Index int
 }
 
 type ApplyMsg struct {
@@ -198,23 +197,25 @@ func (rf *Raft) sendHeartBeat(i int, args AppendEntriesArgs) {
 		rf.compareTerm(reply.Term)
 
 		if rf.state == "Leader" {
-			DPrintf("Len Entries = %v, PrevLogIndex = %v", len(args.Entries), args.PrevLogIndex)
+			// DPrintf("Len Entries = %v, PrevLogIndex = %v", len(args.Entries), args.PrevLogIndex)
 			rf.nextIndex[i] += len(args.Entries)
 			rf.matchIndex[i] = rf.nextIndex[i] - 1
-			DPrintf("%v has a nextIndex of %v and matchIndex of %v", i, rf.nextIndex[i], rf.matchIndex[i])
-			// rf.updateCommitIndex()
+			// DPrintf("%v has a nextIndex of %v and matchIndex of %v", i, rf.nextIndex[i], rf.matchIndex[i])
+			rf.updateCommitIndex()
 		}
 
 		rf.mu.Unlock()
 
 	} else if reply.ReduceNextIndex {
-		DPrintf("Reduce %v index", i)
+		// DPrintf("Reduce %v index", i)
 
 		args.PrevLogIndex--
 		args.PrevLogTerm = -1
 
 		rf.mu.Lock()
 
+		args.LeaderCommit = rf.commitIndex
+		// DPrintf("LeaderCommit %v", args.LeaderCommit)
 		rf.nextIndex[i]--
 
 		if args.PrevLogIndex == 0 {
@@ -265,10 +266,14 @@ func (rf *Raft) startHeartBeat() {
 
 		select {
 		case <-ticker.C:
+
 			for i := range rf.peers {
+
 				if i != rf.me {
 
 					rf.mu.Lock()
+					args.LeaderCommit = rf.commitIndex
+
 
 					args.PrevLogIndex = rf.nextIndex[i] - 1
 					args.PrevLogTerm = -1
@@ -279,17 +284,18 @@ func (rf *Raft) startHeartBeat() {
 					if args.PrevLogIndex == 0 {
 						args.Entries = rf.log
 
-
 					} else if rf.indexValid(args.PrevLogIndex) && len(rf.log) >= rf.nextIndex[i] {
-						
+
 						args.PrevLogTerm = rf.getLogEntry(args.PrevLogIndex).Term
 						idx := rf.nextIndex[i] - 1
 						args.Entries = rf.log[idx:]
 
-						
-					} 
+					}
 
 					rf.mu.Unlock()
+
+					// DPrintf("LeaderCommit %v", args.LeaderCommit)
+
 
 					go rf.sendHeartBeat(i, args)
 				}
@@ -539,6 +545,8 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	
+
 
 	reply.Term = rf.currentTerm
 	reply.ReduceNextIndex = false
@@ -580,15 +588,37 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		}
 
-		DPrintf("%v Updating log, number entries: %v, prev: %v", rf.me, len(args.Entries), args.PrevLogIndex)
-		rf.updateLog(args.Entries, args.PrevLogIndex)
+		// DPrintf("Append Entries LeaderCommit %v, My commit %v", args.LeaderCommit, rf.commitIndex)
 
+		// DPrintf("%v Updating log, number entries: %v, prev: %v", rf.me, len(args.Entries), args.PrevLogIndex)
+		rf.updateLog(args.Entries, args.PrevLogIndex)
+		// DPrintf("%v Updated log, number entries: %v", rf.me, len(rf.log))
+
+
+		// DPrintf("Append Entries LeaderCommit %v, My commit %v", args.LeaderCommit, rf.commitIndex)
+
+		// DPrintf("args %v, mine %v", args.LeaderCommit, rf.commitIndex)
 		if args.LeaderCommit > rf.commitIndex {
+			// DPrintf("%v Update Commit Index called before: %v", rf.me, rf.commitIndex)
 			rf.commitIndex = Min(args.LeaderCommit, len(rf.log))
+			// DPrintf("%v Update Commit Index called after: %v", rf.me, rf.commitIndex)
+		}
+		
+
+		if rf.lastApplied < rf.commitIndex {
+			for logIndex := rf.lastApplied + 1; logIndex < rf.commitIndex + 1; logIndex++ {
+				rf.applyChan <- ApplyMsg {
+					CommandValid: true,
+					Command:      rf.getLogEntry(logIndex).Command,
+					CommandIndex: logIndex,
+				}
+
+				rf.lastApplied++
+			}
 		}
 
-		reply.Success = true
 
+		reply.Success = true
 	}
 
 	return
@@ -655,12 +685,11 @@ func (rf *Raft) appendLog(command interface{}) (index int) {
 }
 
 func (rf *Raft) updateLog(entries []LogEntry, PrevLogIndex int) {
-	
 
 	rf.log = rf.log[:PrevLogIndex]
 	rf.log = append(rf.log, entries...)
 
-	DPrintf("%v %v: %v log length, %v prev log index", rf.state, rf.me, len(rf.log), PrevLogIndex)
+	// DPrintf("%v %v: %v log length, %v prev log index", rf.state, rf.me, len(rf.log), PrevLogIndex)
 }
 
 //
@@ -766,30 +795,35 @@ func Min(x, y int) int {
 	return x
 }
 
-// func (rf *Raft) updateCommitIndex() {
+func (rf *Raft) updateCommitIndex() {
 
-// 	DPrintf("Update Commit Index called")
-// 	majority := len(rf.peers) / 2;
+	// DPrintf("%v Update Commit Index called before: %v", rf.me, rf.commitIndex)
+	majority := len(rf.peers) / 2
+	prevCommitIndex := rf.commitIndex
 
-// 	for n := rf.commitIndex + 1; n <= rf.getLastIndex(); n++ {
-// 		count := 1
-// 		for peerIndex, mI := range rf.matchIndex {
-// 			if peerIndex == rf.me {
-// 				continue
-// 			}
+	for logIndex := rf.commitIndex + 1; logIndex < len(rf.log)+1; logIndex++ {
+		count := 1
 
-// 			if mI >= n {
-// 				count ++;
-// 			}
-// 		}
-// 		rf.DPrintf("count %v", count)
-// 		if (rf.getEntryByIndex(n).Term == rf.term && count > majority) {
-// 			rf.commitIndex = n;
-// 		}
-// 		rf.DPrintf("term1 %v, term2 %v", rf.getEntryByIndex(n).Term, rf.term)
-// 		rf.DPrintf("commitIndex %v", rf.commitIndex)
+		for i := range rf.peers {
+			if i != rf.me {
+				if rf.matchIndex[i] >= logIndex {
+					count++
+				}
+			}
+		}
 
-// 	}
-// 	//rf.applyEntries()
+		if (count > majority) && (rf.getLogEntry(logIndex).Term == rf.currentTerm) {
+			rf.commitIndex = logIndex
+		}
+	}
 
-// }
+	for toCommit := prevCommitIndex + 1; toCommit < rf.commitIndex+1; toCommit++ {
+		rf.applyChan <- ApplyMsg{
+			CommandValid: true,
+			Command:      rf.getLogEntry(toCommit).Command,
+			CommandIndex: toCommit,
+		}
+	}
+
+	// DPrintf("%v Update Commit Index called after: %v", rf.me, rf.commitIndex)
+}
