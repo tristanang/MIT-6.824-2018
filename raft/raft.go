@@ -198,24 +198,33 @@ func (rf *Raft) sendHeartBeat(i int, args AppendEntriesArgs) {
 		rf.compareTerm(reply.Term)
 
 		if rf.state == "Leader" {
+			DPrintf("Len Entries = %v, PrevLogIndex = %v", len(args.Entries), args.PrevLogIndex)
 			rf.nextIndex[i] += len(args.Entries)
 			rf.matchIndex[i] = rf.nextIndex[i] - 1
+			DPrintf("%v has a nextIndex of %v and matchIndex of %v", i, rf.nextIndex[i], rf.matchIndex[i])
 			// rf.updateCommitIndex()
 		}
 
 		rf.mu.Unlock()
 
 	} else if reply.ReduceNextIndex {
+		DPrintf("Reduce %v index", i)
+
 		args.PrevLogIndex--
 		args.PrevLogTerm = -1
 
 		rf.mu.Lock()
 
-		if rf.indexValid(args.PrevLogIndex) {
-			args.PrevLogTerm = rf.getLogEntry(args.PrevLogIndex).Term
-		}
-
 		rf.nextIndex[i]--
+
+		if args.PrevLogIndex == 0 {
+			args.Entries = rf.log
+
+		} else if rf.indexValid(args.PrevLogIndex) {
+			args.PrevLogTerm = rf.getLogEntry(args.PrevLogIndex).Term
+			idx := rf.nextIndex[i] - 1
+			args.Entries = rf.log[idx:]
+		}
 
 		rf.mu.Unlock()
 
@@ -263,17 +272,22 @@ func (rf *Raft) startHeartBeat() {
 
 					args.PrevLogIndex = rf.nextIndex[i] - 1
 					args.PrevLogTerm = -1
+					args.Entries = []LogEntry{}
 
-					DPrintf("%v", args.PrevLogIndex)
+					// DPrintf("%v", args.PrevLogIndex)
 
-					if args.PrevLogIndex == 0 && len(rf.log) >= rf.nextIndex[i] {
+					if args.PrevLogIndex == 0 {
 						args.Entries = rf.log
 
+
 					} else if rf.indexValid(args.PrevLogIndex) && len(rf.log) >= rf.nextIndex[i] {
+						
 						args.PrevLogTerm = rf.getLogEntry(args.PrevLogIndex).Term
-						idx := args.PrevLogIndex - 1
+						idx := rf.nextIndex[i] - 1
 						args.Entries = rf.log[idx:]
-					}
+
+						
+					} 
 
 					rf.mu.Unlock()
 
@@ -292,7 +306,6 @@ func (rf *Raft) startElection() {
 
 	rf.currentTerm++
 	electionTerm := rf.currentTerm
-
 	rf.votedFor = rf.id
 	rf.resetTimer()
 	// rf.electionTimer.Reset(electionTimeout())
@@ -550,27 +563,33 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 
-	// PrevLogIndex < 1 there's no logs to check.
-	if args.PrevLogIndex > 0 {
-	
+	if rf.state != "Leader" {
 
-		if !(rf.indexValid(args.PrevLogIndex)) {
-			if rf.getLogEntry(args.PrevLogIndex).Term != args.PrevLogTerm {
-				rf.log = rf.log[:(args.PrevLogIndex + 1)]
+		// PrevLogIndex < 1 there's no logs to check.
+		if args.PrevLogIndex > 0 {
+			if !(rf.indexValid(args.PrevLogIndex)) {
+				reply.ReduceNextIndex = true
+				return
 			}
 
-			reply.ReduceNextIndex = true
-			return
+			if rf.getLogEntry(args.PrevLogIndex).Term != args.PrevLogTerm {
+				idx := args.PrevLogIndex - 1
+				rf.log = rf.log[:(idx + 1)]
+				reply.ReduceNextIndex = true
+				return
+			}
 		}
+
+		DPrintf("%v Updating log, number entries: %v, prev: %v", rf.me, len(args.Entries), args.PrevLogIndex)
+		rf.updateLog(args.Entries, args.PrevLogIndex)
+
+		if args.LeaderCommit > rf.commitIndex {
+			rf.commitIndex = Min(args.LeaderCommit, len(rf.log))
+		}
+
+		reply.Success = true
+
 	}
-
-	rf.updateLog(args.Entries, args.PrevLogIndex)
-
-	if args.LeaderCommit > rf.commitIndex {
-		rf.commitIndex = Min(args.LeaderCommit, len(rf.log))
-	}
-
-	reply.Success = true
 
 	return
 }
@@ -636,11 +655,12 @@ func (rf *Raft) appendLog(command interface{}) (index int) {
 }
 
 func (rf *Raft) updateLog(entries []LogEntry, PrevLogIndex int) {
-	DPrintf("%v %v: %v log length, %v prev log index", rf.state, rf.me, len(rf.log), PrevLogIndex)
+	
 
 	rf.log = rf.log[:PrevLogIndex]
 	rf.log = append(rf.log, entries...)
-	
+
+	DPrintf("%v %v: %v log length, %v prev log index", rf.state, rf.me, len(rf.log), PrevLogIndex)
 }
 
 //
