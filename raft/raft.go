@@ -572,7 +572,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if rf.state != "Leader" {
+		// DPrintf("Append Entries LeaderCommit %v, My commit %v", args.LeaderCommit, rf.commitIndex)
 
+		// DPrintf("args %v, mine %v", args.LeaderCommit, rf.commitIndex)
+		if args.LeaderCommit > rf.commitIndex {
+			// DPrintf("%v Update Commit Index called before: %v", rf.me, rf.commitIndex)
+			rf.commitIndex = Min(args.LeaderCommit, len(rf.log))
+			// DPrintf("%v Update Commit Index called after: %v", rf.me, rf.commitIndex)
+		}
+		
+
+		if rf.lastApplied < rf.commitIndex {
+			for logIndex := rf.lastApplied + 1; logIndex < rf.commitIndex + 1; logIndex++ {
+				rf.applyChan <- ApplyMsg {
+					CommandValid: true,
+					Command:      rf.getLogEntry(logIndex).Command,
+					CommandIndex: logIndex,
+				}
+
+				rf.lastApplied++
+			}
+		}
 		// PrevLogIndex < 1 there's no logs to check.
 		if args.PrevLogIndex > 0 {
 			if !(rf.indexValid(args.PrevLogIndex)) {
@@ -595,27 +615,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// DPrintf("%v Updated log, number entries: %v", rf.me, len(rf.log))
 
 
-		// DPrintf("Append Entries LeaderCommit %v, My commit %v", args.LeaderCommit, rf.commitIndex)
 
-		// DPrintf("args %v, mine %v", args.LeaderCommit, rf.commitIndex)
-		if args.LeaderCommit > rf.commitIndex {
-			// DPrintf("%v Update Commit Index called before: %v", rf.me, rf.commitIndex)
-			rf.commitIndex = Min(args.LeaderCommit, len(rf.log))
-			// DPrintf("%v Update Commit Index called after: %v", rf.me, rf.commitIndex)
-		}
-		
-
-		if rf.lastApplied < rf.commitIndex {
-			for logIndex := rf.lastApplied + 1; logIndex < rf.commitIndex + 1; logIndex++ {
-				rf.applyChan <- ApplyMsg {
-					CommandValid: true,
-					Command:      rf.getLogEntry(logIndex).Command,
-					CommandIndex: logIndex,
-				}
-
-				rf.lastApplied++
-			}
-		}
 
 
 		reply.Success = true
