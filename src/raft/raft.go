@@ -27,8 +27,22 @@ import (
 	"sync"
 	"time"
 	// "bytes"
-	// "labgob"
+	"labgob"
+	//
+	crand "crypto/rand"
+	"log"
+	"math/big"
 )
+
+// seed random number generator
+func init() {
+	labgob.Register(LogEntry{})
+	max := big.NewInt(int64(1) << 62)
+	bigx, _ := crand.Int(crand.Reader, max)
+	seed := bigx.Int64()
+	rand.Seed(seed)
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+}
 
 type ServerState string
 
@@ -162,12 +176,14 @@ func (rf *Raft) readPersist(data []byte) {
 
 // Election Functions
 
-const ElectionTimeout = 500
+const ElectionTimeout = 1000
 const HeartbeatInterval = 100
 
 // generate random time duration
 func randTimeout() time.Duration {
 	return time.Duration(ElectionTimeout+rand.Intn(ElectionTimeout)) * time.Millisecond
+	// extra := time.Duration(rand.Int63()) % HeartbeatInterval 
+	// return time.Duration((HeartbeatInterval + extra)) * time.Millisecond
 }
 
 func (rf *Raft) resetTimer() {
@@ -222,6 +238,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.mu.Unlock()
 	} else {
 		reply.VoteGranted = false
+		// return
 	}
 
 	// I think this is the correct boolean...
@@ -279,10 +296,19 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) compareTerm(otherTerm int) {
 
-	myTerm, _ := rf.GetStateHelper()
+	myTerm, myState := rf.GetStateHelper()
 
 	if otherTerm > myTerm {
-		rf.becomeFollower(otherTerm)
+
+		if myState != Follower {
+			rf.becomeFollower(otherTerm)
+		} else {
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+
+			rf.currentTerm = otherTerm
+			rf.votedFor = -1
+		}
 	}
 }
 
@@ -322,19 +348,18 @@ func (rf *Raft) startElection() {
 	_, myState := rf.GetStateHelper()
 
 	if myState == Leader {
-		rf.resetTimer()
+		// rf.resetTimer()
 		return
 	}
 
 	rf.mu.Lock()
-
 
 	rf.leader = -1       // server believes there is no leader
 	rf.state = Candidate // server is either a follower or a candidate. It needs to be a candidate
 	rf.currentTerm++
 	rf.votedFor = rf.me
 
-	DPrintf("%v has term %v.", rf.me, rf.currentTerm)
+	DPrintf("Election: %v has term %v.", rf.me, rf.currentTerm)
 
 	args := RequestVoteArgs{
 		Term:        rf.currentTerm,
@@ -413,6 +438,14 @@ func (rf *Raft) startHeartBeat() {
 	numPeers := len(rf.peers)
 	me := rf.me
 	rf.mu.Unlock()
+
+	// Initial Heartbeat (Optimization recommended by lab)
+	for i := 0; i < numPeers; i++ {
+		if i != me {
+			go rf.sendHeartBeat(i)
+
+		}
+	}
 
 	// Unsure about GC for tickers so a timer is used instead.
 	timer := time.NewTimer(HeartbeatInterval * time.Millisecond)
@@ -527,6 +560,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
 	// rf.shutdown <- true
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	rf.state = Follower
 }
 
 //
